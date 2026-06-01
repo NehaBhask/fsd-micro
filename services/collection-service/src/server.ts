@@ -124,41 +124,6 @@ app.post('/import/:shareId', authMiddleware, async (req: Request, res: Response)
   })))
   res.json({ message: 'Imported!', collection: newCollection })
 })
-app.get('/docs/:shareId', async (req: Request, res: Response) => {
-  try {
-    const collection = await Collection.findOne({
-      shareId: req.params.shareId,
-      isShared: true
-    })
-    if (!collection) return res.status(404).json({ error: 'Not found' })
-
-    const requests = await RequestModel.find({ collectionId: collection._id })
-      .sort({ createdAt: 1 })
-
-    const doc = buildDoc(collection, requests)
-
-    const format = req.query.format as string
-    if (format === 'markdown') {
-      res.setHeader('Content-Type', 'text/markdown')
-      res.setHeader('Content-Disposition', `attachment; filename="${collection.name}.md"`)
-      return res.send(toMarkdown(doc))
-    }
-    if (format === 'openapi') {
-      res.setHeader('Content-Type', 'application/yaml')
-      res.setHeader('Content-Disposition', `attachment; filename="${collection.name}.yaml"`)
-      return res.send(toOpenAPI(doc))
-    }
-    if (format === 'html') {
-      res.setHeader('Content-Type', 'text/html')
-      res.setHeader('Content-Disposition', `attachment; filename="${collection.name}.html"`)
-      return res.send(toHTML(doc))
-    }
-
-    res.json({ doc })
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to generate docs' })
-  }
-})
 
 // POST save request
 app.post('/requests', authMiddleware, async (req: Request, res: Response) => {
@@ -180,215 +145,223 @@ app.delete('/requests/:id', authMiddleware, async (req: Request, res: Response) 
   res.json({ message: 'Deleted!' })
 })
 
-function buildDoc(collection: any, requests: any[]) {
-  return {
-    name: collection.name,
-    generatedAt: new Date().toISOString(),
-    baseUrl: deriveBaseUrl(requests),
-    endpoints: requests.map(r => ({
-      name: r.name,
+// ─── Doc-generation helpers ───────────────────────────────────────────────────
+
+function slugify(name: string) {
+  return name.replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-]/g, '').toLowerCase() || 'docs'
+}
+
+function buildDoc(name: string, requests: any[]) {
+  let baseUrl = ''
+  if (requests.length > 0) {
+    try { baseUrl = new URL(requests[0].url).origin } catch { /* ignore */ }
+  }
+  const endpoints = requests.map(r => {
+    let path = r.url
+    try { path = new URL(r.url).pathname } catch { /* ignore */ }
+    let body: object | null = null
+    if (r.body) { try { body = JSON.parse(r.body) } catch { /* ignore */ } }
+    return {
+      name: r.name || 'Untitled',
       method: r.method,
-      path: derivePathFromUrl(r.url),
+      path,
       fullUrl: r.url,
-      headers: (r.headers || []).filter((h: any) => h.enabled && h.key),
-      params: (r.params || []).filter((p: any) => p.enabled && p.key),
-      body: tryParseBody(r.body),
-      bodyRaw: r.body,
-    }))
-  }
+      headers: (r.headers || []).filter((h: any) => h.key && h.enabled !== false),
+      params:  (r.params  || []).filter((p: any) => p.key && p.enabled !== false),
+      body,
+      bodyRaw: r.body || ''
+    }
+  })
+  return { name, generatedAt: new Date().toISOString(), baseUrl, endpoints }
 }
 
-function deriveBaseUrl(requests: any[]): string {
-  if (!requests.length) return ''
-  try {
-    const first = new URL(requests[0].url)
-    return `${first.protocol}//${first.host}`
-  } catch { return '' }
-}
-
-function derivePathFromUrl(url: string): string {
-  try { return new URL(url).pathname } catch { return url }
-}
-
-function tryParseBody(body: string) {
-  if (!body?.trim()) return null
-  try { return JSON.parse(body) } catch { return null }
-}
-
-function toMarkdown(doc: any): string {
-  const lines: string[] = [
-    `# ${doc.name}`,
-    ``,
-    `> Generated ${new Date(doc.generatedAt).toLocaleDateString()}`,
-    ``,
-    `**Base URL:** \`${doc.baseUrl}\``,
-    ``,
-    `---`,
-    ``,
-  ]
-
+function generateMarkdown(doc: any): string {
+  let md = `# ${doc.name}\n\n`
+  md += `> Generated at ${new Date(doc.generatedAt).toLocaleString()}\n\n`
+  md += `**Base URL:** \`${doc.baseUrl || 'N/A'}\`  \n`
+  md += `**Endpoints:** ${doc.endpoints.length}\n\n---\n\n`
   for (const ep of doc.endpoints) {
-    lines.push(`## ${ep.name}`)
-    lines.push(``)
-    lines.push(`\`\`\``)
-    lines.push(`${ep.method} ${ep.path}`)
-    lines.push(`\`\`\``)
-    lines.push(``)
-
-    if (ep.headers.length) {
-      lines.push(`### Headers`)
-      lines.push(`| Key | Value |`)
-      lines.push(`|-----|-------|`)
-      for (const h of ep.headers) {
-        lines.push(`| \`${h.key}\` | \`${h.value}\` |`)
-      }
-      lines.push(``)
+    md += `## \`${ep.method}\` ${ep.path}\n\n`
+    md += `**${ep.name}**\n\n`
+    md += `**Full URL:** \`${ep.fullUrl}\`\n\n`
+    if (ep.headers.length > 0) {
+      md += `### Headers\n\n| Key | Value |\n|-----|-------|\n`
+      ep.headers.forEach((h: any) => { md += `| \`${h.key}\` | \`${h.value}\` |\n` })
+      md += '\n'
     }
-
-    if (ep.params.length) {
-      lines.push(`### Query parameters`)
-      lines.push(`| Key | Value |`)
-      lines.push(`|-----|-------|`)
-      for (const p of ep.params) {
-        lines.push(`| \`${p.key}\` | \`${p.value}\` |`)
-      }
-      lines.push(``)
+    if (ep.params.length > 0) {
+      md += `### Query Parameters\n\n| Key | Example Value |\n|-----|---------------|\n`
+      ep.params.forEach((p: any) => { md += `| \`${p.key}\` | \`${p.value}\` |\n` })
+      md += '\n'
     }
-
     if (ep.body) {
-      lines.push(`### Request body`)
-      lines.push(`\`\`\`json`)
-      lines.push(JSON.stringify(ep.body, null, 2))
-      lines.push(`\`\`\``)
-      lines.push(``)
+      md += `### Request Body\n\n\`\`\`json\n${JSON.stringify(ep.body, null, 2)}\n\`\`\`\n\n`
     }
-
-    lines.push(`---`)
-    lines.push(``)
+    md += `---\n\n`
   }
-
-  return lines.join('\n')
+  md += `_Generated by API Playground_\n`
+  return md
 }
 
-function toOpenAPI(doc: any): string {
-  const paths: Record<string, any> = {}
+function generateHtml(doc: any): string {
+  const esc = (s: string) =>
+    String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+
+  const methodColors: Record<string, string> = {
+    GET:    'background:#064e3b;color:#6ee7b7',
+    POST:   'background:#1e3a5f;color:#93c5fd',
+    PUT:    'background:#713f12;color:#fde68a',
+    DELETE: 'background:#7f1d1d;color:#fca5a5',
+    PATCH:  'background:#7c2d12;color:#fdba74',
+  }
+
+  let html = `<!DOCTYPE html><html lang="en"><head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(doc.name)} – API Docs</title>
+<style>
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;max-width:900px;margin:0 auto;padding:2rem;background:#0f1117;color:#e2e8f0}
+h1{color:#fff;margin-bottom:.25rem}
+h2{color:#93c5fd;font-family:monospace;font-size:1rem;margin:.5rem 0}
+h3{color:#64748b;font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;margin:1rem 0 .5rem}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-weight:700;font-size:.7rem;font-family:monospace}
+code{background:#1e293b;padding:2px 6px;border-radius:3px;font-family:monospace;font-size:.85rem}
+pre{background:#1e293b;padding:1rem;border-radius:8px;overflow-x:auto;font-size:.85rem}
+table{width:100%;border-collapse:collapse;margin:.75rem 0}
+th,td{text-align:left;padding:8px;border-bottom:1px solid #334155}
+th{color:#94a3b8;font-size:.7rem;text-transform:uppercase}
+.ep{border:1px solid #334155;border-radius:12px;padding:1.5rem;margin:1rem 0}
+footer{text-align:center;color:#475569;font-size:.75rem;margin-top:3rem}
+hr{border-color:#334155;margin:1.5rem 0}
+</style></head><body>
+<h1>${esc(doc.name)}</h1>
+<p style="color:#64748b"><code>${esc(doc.baseUrl || '')}</code> &middot; ${doc.endpoints.length} endpoint${doc.endpoints.length !== 1 ? 's' : ''}</p><hr>`
 
   for (const ep of doc.endpoints) {
-    const path = ep.path || '/'
-    if (!paths[path]) paths[path] = {}
+    const style = methodColors[ep.method] || 'background:#334155;color:#e2e8f0'
+    html += `<div class="ep">
+<h2><span class="badge" style="${style}">${esc(ep.method)}</span>&nbsp; ${esc(ep.path)}</h2>
+<p><strong>${esc(ep.name)}</strong></p>
+<p>Full URL: <code>${esc(ep.fullUrl)}</code></p>`
+    if (ep.headers.length > 0) {
+      html += `<h3>Headers</h3><table><tr><th>Key</th><th>Value</th></tr>`
+      ep.headers.forEach((h: any) => {
+        html += `<tr><td><code>${esc(h.key)}</code></td><td><code>${esc(h.value)}</code></td></tr>`
+      })
+      html += `</table>`
+    }
+    if (ep.params.length > 0) {
+      html += `<h3>Query Parameters</h3><table><tr><th>Key</th><th>Example Value</th></tr>`
+      ep.params.forEach((p: any) => {
+        html += `<tr><td><code>${esc(p.key)}</code></td><td><code>${esc(p.value)}</code></td></tr>`
+      })
+      html += `</table>`
+    }
+    if (ep.body) {
+      html += `<h3>Request Body</h3><pre><code>${esc(JSON.stringify(ep.body, null, 2))}</code></pre>`
+    }
+    html += `</div>`
+  }
+  html += `<footer>Generated by API Playground &middot; ${new Date(doc.generatedAt).toLocaleString()}</footer>
+</body></html>`
+  return html
+}
 
+function generateOpenApi(doc: any): object {
+  const paths: Record<string, any> = {}
+  for (const ep of doc.endpoints) {
     const method = ep.method.toLowerCase()
-    const op: any = {
+    if (!paths[ep.path]) paths[ep.path] = {}
+    paths[ep.path][method] = {
       summary: ep.name,
       parameters: [
         ...ep.params.map((p: any) => ({
-          name: p.key,
-          in: 'query',
-          schema: { type: 'string' },
-          example: p.value,
+          name: p.key, in: 'query', example: p.value, schema: { type: 'string' }
         })),
         ...ep.headers.map((h: any) => ({
-          name: h.key,
-          in: 'header',
-          schema: { type: 'string' },
-          example: h.value,
-        })),
+          name: h.key, in: 'header', example: h.value, schema: { type: 'string' }
+        }))
       ],
-      responses: { '200': { description: 'Success' } },
+      ...(ep.body ? {
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' }, example: ep.body } }
+        }
+      } : {}),
+      responses: { '200': { description: 'Successful response' } }
     }
-
-    if (ep.body && ['post', 'put', 'patch'].includes(method)) {
-      op.requestBody = {
-        content: {
-          'application/json': {
-            schema: { type: 'object' },
-            example: ep.body,
-          },
-        },
-      }
-    }
-
-    paths[path][method] = op
   }
-
-  return [
-    `openapi: 3.0.0`,
-    `info:`,
-    `  title: "${doc.name}"`,
-    `  version: "1.0.0"`,
-    `servers:`,
-    `  - url: "${doc.baseUrl}"`,
-    `paths:`,
-    ...Object.entries(paths).flatMap(([path, methods]) => [
-      `  "${path}":`,
-      ...Object.entries(methods).flatMap(([method, op]: [string, any]) => [
-        `    ${method}:`,
-        `      summary: "${op.summary}"`,
-        `      responses:`,
-        `        "200":`,
-        `          description: Success`,
-      ]),
-    ]),
-  ].join('\n')
+  return {
+    openapi: '3.0.0',
+    info: { title: doc.name, version: '1.0.0', description: 'Generated by API Playground' },
+    servers: [{ url: doc.baseUrl || '/' }],
+    paths
+  }
 }
 
-function toHTML(doc: any): string {
-  const endpointBlocks = doc.endpoints.map((ep: any) => {
-    const methodColor = {
-      GET: '#1D9E75', POST: '#378ADD', PUT: '#BA7517',
-      PATCH: '#D85A30', DELETE: '#E24B4A'
-    }[ep.method] || '#888'
+// ─── Doc endpoints ────────────────────────────────────────────────────────────
 
-    const headersHTML = ep.headers.length ? `
-      <table><tr><th>Key</th><th>Value</th></tr>
-      ${ep.headers.map((h: any) => `<tr><td><code>${h.key}</code></td><td><code>${h.value}</code></td></tr>`).join('')}
-      </table>` : ''
+// POST /:id/docs — generate documentation (auto-enables sharing)
+app.post('/:id/docs', authMiddleware, async (req: Request, res: Response) => {
+  try {
+    let collection = await Collection.findById(req.params.id)
+    if (!collection) return res.status(404).json({ error: 'Collection not found' })
 
-    const bodyHTML = ep.body ? `
-      <pre><code>${JSON.stringify(ep.body, null, 2)}</code></pre>` : ''
+    // Auto-enable sharing so the public /docs/:shareId route works
+    if (!collection.shareId) {
+      const shareId = crypto.randomBytes(8).toString('hex')
+      collection = await Collection.findByIdAndUpdate(
+        req.params.id,
+        { isShared: true, shareId },
+        { returnDocument: 'after' }
+      )
+    } else if (!collection.isShared) {
+      collection = await Collection.findByIdAndUpdate(
+        req.params.id,
+        { isShared: true },
+        { returnDocument: 'after' }
+      )
+    }
 
-    return `
-      <div class="endpoint">
-        <div class="ep-header">
-          <span class="method" style="background:${methodColor}">${ep.method}</span>
-          <code class="path">${ep.path}</code>
-          <span class="ep-name">${ep.name}</span>
-        </div>
-        ${headersHTML ? `<div class="section"><h4>Headers</h4>${headersHTML}</div>` : ''}
-        ${bodyHTML ? `<div class="section"><h4>Request body</h4>${bodyHTML}</div>` : ''}
-      </div>`
-  }).join('')
+    const requests = await RequestModel.find({ collectionId: collection!._id })
+    const doc = buildDoc(collection!.name, requests)
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<title>${doc.name} — API Docs</title>
-<style>
-  body { font-family: system-ui, sans-serif; max-width: 860px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
-  h1 { font-size: 28px; margin-bottom: 4px; }
-  .meta { color: #666; font-size: 14px; margin-bottom: 32px; }
-  .endpoint { border: 1px solid #e5e5e5; border-radius: 8px; margin-bottom: 16px; overflow: hidden; }
-  .ep-header { display: flex; align-items: center; gap: 12px; padding: 14px 16px; background: #fafafa; }
-  .method { color: white; font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 4px; letter-spacing: .5px; }
-  .path { font-size: 14px; font-weight: 500; }
-  .ep-name { color: #666; font-size: 13px; margin-left: auto; }
-  .section { padding: 16px; border-top: 1px solid #e5e5e5; }
-  .section h4 { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: #888; margin: 0 0 10px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }
-  th { color: #888; font-weight: 500; }
-  pre { background: #f6f6f6; padding: 12px; border-radius: 6px; overflow-x: auto; margin: 0; }
-  code { font-family: monospace; font-size: 13px; }
-</style>
-</head>
-<body>
-<h1>${doc.name}</h1>
-<div class="meta">Base URL: <code>${doc.baseUrl}</code> &nbsp;·&nbsp; Generated ${new Date(doc.generatedAt).toLocaleDateString()}</div>
-${endpointBlocks}
-</body>
-</html>`
-}
+    res.json({ doc, shareId: collection!.shareId })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to generate documentation' })
+  }
+})
+
+// GET /docs/:shareId — PUBLIC: fetch or export docs
+app.get('/docs/:shareId', async (req: Request, res: Response) => {
+  try {
+    const { format } = req.query
+    const collection = await Collection.findOne({ shareId: req.params.shareId, isShared: true })
+    if (!collection) return res.status(404).json({ error: 'Documentation not found or no longer available' })
+
+    const requests = await RequestModel.find({ collectionId: collection._id })
+    const doc = buildDoc(collection.name, requests)
+
+    if (format === 'markdown') {
+      res.setHeader('Content-Type', 'text/markdown')
+      res.setHeader('Content-Disposition', `attachment; filename="${slugify(doc.name)}-docs.md"`)
+      return res.send(generateMarkdown(doc))
+    }
+    if (format === 'html') {
+      res.setHeader('Content-Type', 'text/html')
+      res.setHeader('Content-Disposition', `attachment; filename="${slugify(doc.name)}-docs.html"`)
+      return res.send(generateHtml(doc))
+    }
+    if (format === 'openapi') {
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Content-Disposition', `attachment; filename="${slugify(doc.name)}-openapi.json"`)
+      return res.json(generateOpenApi(doc))
+    }
+
+    res.json({ doc })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch documentation' })
+  }
+})
 
 const PORT = process.env.PORT || 3002
 app.listen(PORT, () => console.log(`Collection Service running on port ${PORT}`))

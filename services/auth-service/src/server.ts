@@ -71,5 +71,97 @@ app.post('/verify', (req, res) => {
   }
 })
 
+// Forgot Password
+app.post('/forgot-password', async (req, res) => {
+  try {
+    const { email } = req.body
+    if (!email) return res.status(400).json({ error: 'Email is required' })
+
+    const user = await User.findOne({ email: email.toLowerCase() })
+    if (!user) {
+      // For security, return same success message so users can't discover registered emails
+      return res.json({ message: 'If an account exists with that email, a reset link has been sent.' })
+    }
+
+    const resetToken = jwt.sign(
+      { id: user._id, type: 'reset' },
+      process.env.JWT_SECRET || 'secret',
+      { expiresIn: '15m' }
+    )
+
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080'
+    const resetUrl = `${frontendUrl}/reset-password?token=${resetToken}`
+
+    const resendApiKey = process.env.RESEND_API_KEY
+    if (!resendApiKey) {
+      console.warn('RESEND_API_KEY is not configured!')
+      return res.status(500).json({ error: 'Email service is not configured' })
+    }
+
+    const emailRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${resendApiKey}`
+      },
+      body: JSON.stringify({
+        from: 'API Playground <onboarding@resend.dev>',
+        to: user.email,
+        subject: 'Reset your API Playground Password',
+        html: `
+          <div style="font-family: system-ui, sans-serif; background-color: #0f1117; color: #e2e8f0; padding: 2rem; border-radius: 8px; max-width: 600px; margin: auto; border: 1px solid #1e293b;">
+            <h2 style="color: #ffffff; text-align: center; margin-bottom: 1.5rem;">Reset Your Password</h2>
+            <p style="font-size: 1rem; line-height: 1.5; color: #94a3b8; margin-bottom: 2rem; text-align: center;">
+              You requested a password reset for your API Playground account. Click the button below to set a new password. This link is valid for 15 minutes.
+            </p>
+            <div style="text-align: center; margin-bottom: 2rem;">
+              <a href="${resetUrl}" style="background-color: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: 600; display: inline-block;">Reset Password</a>
+            </div>
+            <p style="font-size: 0.85rem; color: #64748b; text-align: center; margin-top: 2rem;">
+              If you did not request this, you can safely ignore this email.
+            </p>
+          </div>
+        `
+      })
+    })
+
+    if (!emailRes.ok) {
+      const errText = await emailRes.text()
+      console.error('Failed to send email via Resend:', errText)
+      return res.status(500).json({ error: 'Failed to send reset email' })
+    }
+
+    res.json({ message: 'If an account exists with that email, a reset link has been sent.' })
+  } catch (err) {
+    console.error('Forgot password error:', err)
+    res.status(500).json({ error: 'Something went wrong' })
+  }
+})
+
+// Reset Password
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body
+    if (!token || !newPassword) return res.status(400).json({ error: 'Token and new password are required' })
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret') as any
+    if (decoded.type !== 'reset') {
+      return res.status(400).json({ error: 'Invalid reset token' })
+    }
+
+    const user = await User.findById(decoded.id)
+    if (!user) return res.status(404).json({ error: 'User not found' })
+
+    const hashed = await bcrypt.hash(newPassword, 10)
+    user.password = hashed
+    await user.save()
+
+    res.json({ message: 'Password has been reset successfully' })
+  } catch (err) {
+    console.error('Reset password error:', err)
+    res.status(400).json({ error: 'Token is invalid or has expired' })
+  }
+})
+
 const PORT = process.env.PORT || 3001
 app.listen(PORT, () => console.log(`Auth Service running on port ${PORT}`))

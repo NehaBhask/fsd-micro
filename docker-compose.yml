@@ -25,6 +25,8 @@ services:
       - PORT=3001
       - MONGODB_URI=${MONGODB_URI}
       - JWT_SECRET=${JWT_SECRET}
+      - RESEND_API_KEY=${RESEND_API_KEY}
+      - FRONTEND_URL=${FRONTEND_URL}
     networks:
       - app-network
 
