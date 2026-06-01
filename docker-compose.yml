@@ -1,5 +1,5 @@
 services:
-  # API Gateway
+  # API Gateway — only entry point exposed to the host
   api-gateway:
     build:
       context: ./api-gateway
@@ -15,14 +15,12 @@ services:
     networks:
       - app-network
 
-  # Auth Service
+  # Auth Service — internal only, no host port needed
   auth-service:
     build:
       context: ./services/auth-service
       dockerfile: Dockerfile
     container_name: auth-service
-    ports:
-      - "3001:3001"
     environment:
       - PORT=3001
       - MONGODB_URI=${MONGODB_URI}
@@ -30,14 +28,12 @@ services:
     networks:
       - app-network
 
-  # Collection Service
+  # Collection Service — internal only, no host port needed
   collection-service:
     build:
       context: ./services/collection-service
       dockerfile: Dockerfile
     container_name: collection-service
-    ports:
-      - "3002:3002"
     environment:
       - PORT=3002
       - MONGODB_URI=${MONGODB_URI}
@@ -45,14 +41,12 @@ services:
     networks:
       - app-network
 
-  # History Service
+  # History Service — internal only, no host port needed
   history-service:
     build:
       context: ./services/history-service
       dockerfile: Dockerfile
     container_name: history-service
-    ports:
-      - "3003:3003"
     environment:
       - PORT=3003
       - MONGODB_URI=${MONGODB_URI}
@@ -60,14 +54,12 @@ services:
     networks:
       - app-network
 
-  # Environment Service
+  # Environment Service — internal only, no host port needed
   environment-service:
     build:
       context: ./services/environment-service
       dockerfile: Dockerfile
     container_name: environment-service
-    ports:
-      - "3004:3004"
     environment:
       - PORT=3004
       - MONGODB_URI=${MONGODB_URI}

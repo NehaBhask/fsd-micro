@@ -3,6 +3,7 @@ import Layout from './components/Layout'
 import LoginPage from './pages/LoginPage'
 import ImportPage from './pages/ImportPage'
 import StatsPage from './pages/StatsPage'
+import DocsPage from './pages/DocsPage'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = localStorage.getItem('token')
@@ -16,6 +17,7 @@ function App() {
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="/import/:shareId" element={<ImportPage />} />
+        <Route path="/docs/:shareId" element={<DocsPage />} />
         <Route path="/" element={
           <ProtectedRoute>
             <Layout />

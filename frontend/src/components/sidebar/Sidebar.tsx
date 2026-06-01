@@ -45,7 +45,7 @@ const methodColors: Record<string, string> = {
 }
 
 function Sidebar() {
-  const [shareCollection, setShareCollection] = useState<any>(null)
+  const [shareCollection, setShareCollection] = useState<{ collection: any; tab: 'share' | 'docs' } | null>(null)
   const [expanded, setExpanded] = useState<string[]>([])
   const [collections, setCollections] = useState<Collection[]>([])
   const [uncategorized, setUncategorized] = useState<SavedRequest[]>([])
@@ -252,9 +252,17 @@ function Sidebar() {
                       {collection.requests.length}
                     </span>
                   </button>
+                  {/* Docs button */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setShareCollection({ collection, tab: 'docs' }) }}
+                    className="opacity-0 group-hover/col:opacity-100 text-indigo-400 hover:text-indigo-300 px-1 py-2 text-xs transition-opacity"
+                    title="Generate docs"
+                  >
+                    📄
+                  </button>
                   {/* Share button */}
                   <button
-                    onClick={(e) => { e.stopPropagation(); setShareCollection(collection) }}
+                    onClick={(e) => { e.stopPropagation(); setShareCollection({ collection, tab: 'share' }) }}
                     className="opacity-0 group-hover/col:opacity-100 text-blue-400 hover:text-blue-300 px-1 py-2 text-xs transition-opacity"
                     title="Share collection"
                   >
@@ -409,7 +417,8 @@ function Sidebar() {
       </div>
      {shareCollection && (
   <ShareModal
-    collection={shareCollection}
+    collection={shareCollection.collection}
+    initialTab={shareCollection.tab}
     onClose={() => setShareCollection(null)}
     onUpdate={fetchCollections}
     />
